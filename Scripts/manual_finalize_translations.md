@@ -6,7 +6,7 @@ set -u
 # this script commits the changes to translations branch, pushes and opens PR
 translation_dir="translations"
 
-date="date"
+date=`date`
 
 projects=( \
     LoopKit:AmplitudeService:dev \
