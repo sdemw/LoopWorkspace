@@ -1,0 +1,138 @@
+name: 4P. Build PowerPack 0.3.16
+run-name: Build PowerPack 0.3.16 from reviewed source
+
+on:
+  workflow_dispatch:
+
+env:
+  TARGET_BRANCH: powerpack/0.3.16
+  EXPECTED_WORKSPACE_SHA: 10982ecb0ca5f5f31bcf883c423241b12f957800
+  EXPECTED_LOOP_SHA: d0bfb632aedf1be6b328aae464540e4d4e65e13f
+  EXPECTED_LOOPKIT_SHA: 9715daed2982d887dbca5b15809a0392ed430ea5
+  EXPECTED_OMNIPODKIT_SHA: 08c4efe25f224b552e6c48fdcf6d1b33970e7c12
+  EXPECTED_G7SENSORKIT_SHA: 0c87905297b70a7f0fa41e87fa0fbe1efff6c29f
+
+jobs:
+  check_certs:
+    name: Check certificates
+    uses: ./.github/workflows/create_certs.yml
+    secrets: inherit
+
+  build:
+    name: Build reviewed PowerPack source
+    needs: check_certs
+    runs-on: macos-26
+    permissions:
+      contents: read
+
+    steps:
+      - name: Select Xcode 26.5
+        run: sudo xcode-select --switch /Applications/Xcode_26.5.app/Contents/Developer
+
+      - name: Checkout immutable PowerPack branch
+        uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GH_PAT }}
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Verify reviewed source provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          actual_workspace_sha="$(git rev-parse HEAD)"
+          actual_loop_sha="$(git -C Loop rev-parse HEAD)"
+          actual_loopkit_sha="$(git -C LoopKit rev-parse HEAD)"
+          actual_omnipodkit_sha="$(git -C OmnipodKit rev-parse HEAD)"
+          actual_g7sensorkit_sha="$(git -C G7SensorKit rev-parse HEAD)"
+
+          if [[ "$actual_workspace_sha" != "$EXPECTED_WORKSPACE_SHA" ]]; then
+            echo "::error::Workspace revision differs from the reviewed PowerPack 0.3.16 source."
+            exit 1
+          fi
+
+          if [[ "$actual_loop_sha" != "$EXPECTED_LOOP_SHA" ]]; then
+            echo "::error::Loop revision differs from the reviewed PowerPack 0.3.16 source."
+            exit 1
+          fi
+
+          if [[ "$actual_loopkit_sha" != "$EXPECTED_LOOPKIT_SHA" ]]; then
+            echo "::error::LoopKit revision differs from the reviewed PowerPack 0.3.16 source."
+            exit 1
+          fi
+
+          if [[ "$actual_omnipodkit_sha" != "$EXPECTED_OMNIPODKIT_SHA" ]]; then
+            echo "::error::OmnipodKit revision differs from the reviewed PowerPack 0.3.16 source."
+            exit 1
+          fi
+
+          if [[ "$actual_g7sensorkit_sha" != "$EXPECTED_G7SENSORKIT_SHA" ]]; then
+            echo "::error::G7SensorKit revision differs from the reviewed PowerPack 0.3.16 source."
+            exit 1
+          fi
+
+          if git submodule status --recursive | grep -Eq '^[+-U]'; then
+            echo "::error::At least one submodule does not match the reviewed workspace pin."
+            git submodule status --recursive
+            exit 1
+          fi
+
+          grep -Fq 'LOOP_MARKETING_VERSION = 3.14.3' VersionOverride.xcconfig
+          grep -Fq 'CURRENT_PROJECT_VERSION = 58' VersionOverride.xcconfig
+
+          {
+            echo '### Reviewed PowerPack source verified'
+            echo '- PowerPack: 0.3.16'
+            echo '- Loop: 3.14.3'
+            echo "- Workspace: $actual_workspace_sha"
+            echo "- Loop: $actual_loop_sha"
+            echo "- LoopKit: $actual_loopkit_sha"
+            echo "- OmnipodKit: $actual_omnipodkit_sha"
+            echo "- G7SensorKit: $actual_g7sensorkit_sha"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install project dependencies
+        run: bundle install
+
+      - name: Prevent Fastlane Match tables from entering logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          table_printer_path="$(ruby -e 'puts Gem::Specification.find_by_name("fastlane").gem_dir')/match/lib/match/table_printer.rb"
+          test -f "$table_printer_path"
+          sed -i '' '/puts(Terminal::Table.new(params))/d' "$table_printer_path"
+
+      - name: Sync runner clock
+        run: sudo sntp -sS time.windows.com
+
+      - name: Build signed Loop archive
+        run: bundle exec fastlane build_loop
+        env:
+          TEAMID: ${{ secrets.TEAMID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          FASTLANE_KEY_ID: ${{ secrets.FASTLANE_KEY_ID }}
+          FASTLANE_ISSUER_ID: ${{ secrets.FASTLANE_ISSUER_ID }}
+          FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+
+      - name: Upload to TestFlight
+        run: bundle exec fastlane release
+        env:
+          TEAMID: ${{ secrets.TEAMID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          FASTLANE_KEY_ID: ${{ secrets.FASTLANE_KEY_ID }}
+          FASTLANE_ISSUER_ID: ${{ secrets.FASTLANE_ISSUER_ID }}
+          FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: powerpack-0.3.16-build-evidence
+          retention-days: 90
+          path: |
+            artifacts
+            buildlog
